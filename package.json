@@ -1,0 +1,17 @@
+{
+  "name": "mandate",
+  "version": "0.1.0",
+  "description": "Mandate: a trust layer between AI shopping agents and PayPal (PayPal AI Hackathon)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "license": "MIT"
+}
