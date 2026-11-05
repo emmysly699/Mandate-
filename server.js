@@ -1,65 +1,192 @@
-// Mandate - Day 1 spike: prove the PayPal sandbox flow works end to end.
-// Flow: create order -> buyer approves on PayPal -> PayPal redirects back -> we capture.
+// Mandate: a trust layer between AI shopping agents and PayPal.
+// Flow: agent request -> policy rules -> AI intent review -> (human approval) -> PayPal order -> capture.
+// Every step is written to a hash-chained evidence ledger.
+
 import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { CATALOG, CATEGORIES } from "./lib/catalog.js";
+import { evaluate } from "./lib/policy.js";
+import { chooseItem, reviewIntent } from "./lib/agent.js";
+import { aiEnabled } from "./lib/ai.js";
+import * as ledger from "./lib/ledger.js";
+import { state, resetState, committedSpend, paidSpend, newId } from "./lib/store.js";
+import { missingEnv, getAccessToken, createOrder, captureOrder, paypalFetch } from "./lib/paypal.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
+
 const PORT = process.env.PORT || 3000;
-const CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
-const CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
 const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
-const PAYPAL_API = "https://api-m.sandbox.paypal.com"; // sandbox only
-function requireEnv() {
-  const missing = [];
-  if (!CLIENT_ID) missing.push("PAYPAL_CLIENT_ID");
-  if (!CLIENT_SECRET) missing.push("PAYPAL_CLIENT_SECRET");
-  return missing;
-}
 
-// Get a short-lived access token from PayPal.
-async function getAccessToken() {
-  const auth = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
-  const res = await fetch(`${PAYPAL_API}/v1/oauth2/token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-"Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials",
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(`Token error ${res.status}: ${JSON.stringify(data)}`);
-  return data.access_token;
-}
-async function paypalFetch(path, options = {}) {
-  const token = await getAccessToken();
-  const res = await fetch(`${PAYPAL_API}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
-}
+const findRequest = (id) => state.requests.find((r) => r.id === id);
+const round2 = (n) => Math.round(n * 100) / 100;
 
-// 1. Health check + config status
-app.get("/", (req, res) => {
-  const missing = requireEnv();
+// ---------- health ----------
+app.get("/health", (req, res) => {
+  const missing = missingEnv();
+  res.json({ app: "Mandate", status: missing.length ? "missing env vars" : "ready", missing, baseUrl: BASE_URL, ai: aiEnabled() ? "gemini" : "fallback (no GEMINI_API_KEY)" });
+});
+
+// ---------- state for the dashboard ----------
+app.get("/api/state", (req, res) => {
   res.json({
-    app: "Mandate",
-    status: missing.length ? "missing env vars" : "ready",
-    missing,
-    baseUrl: BASE_URL,
-    try: [`${BASE_URL}/paypal/token-check`, `${BASE_URL}/paypal/create?amount=10`],
+    mandate: state.mandate,
+    categories: CATEGORIES,
+    catalog: CATALOG,
+    committed: committedSpend(),
+    paid: paidSpend(),
+    requests: [...state.requests].reverse(),
+    chain: ledger.verify(),
+    ai: aiEnabled(),
   });
 });
 
-// 2. Confirms your Client ID and Secret work (does not move money)
+app.get("/api/ledger", (req, res) => res.json({ chain: ledger.verify(), entries: ledger.all() }));
+// ---------- mandate ----------
+app.put("/api/mandate", (req, res) => {
+  const b = req.body || {};
+  const num = (v) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? round2(Number(v)) : null);
+  const monthlyBudget = num(b.monthlyBudget);
+  const perPurchaseCap = num(b.perPurchaseCap);
+  const askAbove = num(b.askAbove);
+  if (monthlyBudget === null || perPurchaseCap === null || askAbove === null) return res.status(400).json({ error: "Budget, cap and threshold must be numbers of 0 or more" });
+  const allowedCategories = Array.isArray(b.allowedCategories) ? b.allowedCategories.filter((c) => CATEGORIES.includes(c)) : [];
+  const intent = String(b.intent || "").slice(0, 300);
+  state.mandate = { monthlyBudget, perPurchaseCap, askAbove, allowedCategories, intent };
+  ledger.append("mandate_updated", null, { mandate: state.mandate });
+  res.json({ ok: true, mandate: state.mandate });
+});
+
+// ---------- agent run ----------
+app.post("/api/agent/run", async (req, res) => {
+  const task = String(req.body?.task || "").trim().slice(0, 200);
+  if (!task) return res.status(400).json({ error: "Tell the agent what to buy" });
+
+  const id = newId();
+  const mandate = JSON.parse(JSON.stringify(state.mandate)); // snapshot used for this decision
+  const request = { id, task, createdAt: new Date().toISOString(), mandate, status: "pending", item: null, quantity: 0, total: 0, agent: null, policy: null, review: null, orderId: null, captureId: null, note: null };
+  ledger.append("agent_task", id, { task, mandate });
+
+  const choice = await chooseItem(task);
+  request.agent = { reasoning: choice.reasoning, source: choice.source };
+
+  if (!choice.item) {
+    request.status = "no_match";
+    ledger.append("agent_no_match", id, { reasoning: choice.reasoning, source: choice.source });
+    state.requests.push(request);
+    return res.json({ ok: true, request });
+  }
+
+  request.item = { id: choice.item.id, name: choice.item.name, category: choice.item.category, price: choice.item.price };
+  request.quantity = choice.quantity;
+  ledger.append("agent_choice", id, { item: request.item, quantity: choice.quantity, reasoning: choice.reasoning, source: choice.source });
+
+  const policy = evaluate(mandate, committedSpend(), choice.item, choice.quantity);
+  request.policy = policy;
+  request.total = policy.total;
+  ledger.append("policy_decision", id, { decision: policy.decision, total: policy.total, checks: policy.checks });
+
+  if (policy.decision !== "block") {
+    request.review = await reviewIntent(mandate, task, choice.item, choice.quantity, choice.reasoning);
+    ledger.append("intent_review", id, request.review);
+  }
+
+  if (policy.decision === "block") {
+    request.status = "blocked";
+  } else if (policy.decision === "ask") {
+    request.status = "awaiting_approval";
+  } else if (request.review?.verdict === "concern") {
+    request.status = "awaiting_approval";
+    request.note = "Rules passed, but the AI reviewer flagged a concern, so your approval is needed.";
+  } else {
+    request.status = "approved";
+  }
+  ledger.append("final_decision", id, { status: request.status, note: request.note });
+
+  state.requests.push(request);
+  res.json({ ok: true, request });
+});
+
+// ---------- human decision on a request that needs approval ----------
+app.post("/api/requests/:id/decision", (req, res) => {
+  const r = findRequest(req.params.id);
+  if (!r) return res.status(404).json({ error: "Request not found" });
+  if (r.status !== "awaiting_approval") return res.status(409).json({ error: "This request is not waiting for approval" });
+  const action = req.body?.action;
+  if (action === "reject") {
+    r.status = "rejected";
+    ledger.append("human_decision", r.id, { action: "reject" });
+    return res.json({ ok: true, request: r });
+  }
+  if (action === "approve") {
+    const remaining = round2(state.mandate.monthlyBudget - committedSpend());
+    if (r.total > remaining) return res.status(409).json({ error: `Budget check failed: $${r.total} is more than the $${Math.max(remaining, 0)} left` });
+    r.status = "approved";
+    ledger.append("human_decision", r.id, { action: "approve" });
+    return res.json({ ok: true, request: r });
+  }
+  res.status(400).json({ error: "action must be approve or reject" });
+});
+
+// ---------- start PayPal payment for an approved request ----------
+app.post("/api/requests/:id/pay", async (req, res) => {
+  const r = findRequest(req.params.id);
+  if (!r) return res.status(404).json({ error: "Request not found" });
+  if (r.status !== "approved" && r.status !== "payment_failed") return res.status(409).json({ error: "This request is not approved for payment" });
+  try {
+    if (missingEnv().length) throw new Error("PayPal credentials missing on the server");
+    const { orderId, approveUrl } = await createOrder({ amount: r.total, description: `${r.item.name} x${r.quantity}`, customId: r.id, baseUrl: BASE_URL });
+    r.orderId = orderId;
+    r.status = "approved";
+    ledger.append("paypal_order_created", r.id, { orderId, amount: r.total, currency: "USD" });
+    res.json({ ok: true, approveUrl });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- reset the demo ----------
+app.post("/api/reset", (req, res) => {
+  resetState();
+  ledger.reset();
+  res.json({ ok: true });
+});
+// ---------- PayPal return / cancel ----------
+app.get("/paypal/return", async (req, res) => {
+  const orderId = req.query.token;
+  if (!orderId) return res.status(400).json({ error: "missing order token" });
+  const r = state.requests.find((x) => x.orderId === orderId);
+  try {
+    const result = await captureOrder(orderId);
+    if (!r) return res.json({ ok: true, testOrder: true, ...result }); // plain sandbox test order
+    r.captureId = result.captureId;
+    r.status = result.captureStatus === "COMPLETED" ? "paid" : "payment_failed";
+    r.paidAt = new Date().toISOString();
+    ledger.append("paypal_capture", r.id, result);
+    return res.redirect(`/?paid=${r.id}`);
+  } catch (err) {
+    if (r) {
+      r.status = "payment_failed";
+      r.note = String(err.message).slice(0, 200);
+      ledger.append("paypal_capture_failed", r.id, { error: r.note });
+      return res.redirect(`/?failed=${r.id}`);
+    }
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+app.get("/paypal/cancel", (req, res) => {
+  const r = state.requests.find((x) => x.orderId === req.query.token);
+  if (r) ledger.append("buyer_cancelled", r.id, { orderId: r.orderId });
+  res.redirect("/?cancelled=1");
+});
+// ---------- sandbox test helpers (from day 1) ----------
 app.get("/paypal/token-check", async (req, res) => {
   try {
-    const missing = requireEnv();
+    const missing = missingEnv();
     if (missing.length) return res.status(500).json({ error: "missing env vars", missing });
     const token = await getAccessToken();
     res.json({ ok: true, message: "Sandbox credentials work", tokenPreview: token.slice(0, 8) + "..." });
@@ -68,73 +195,6 @@ app.get("/paypal/token-check", async (req, res) => {
   }
 });
 
-// 3. Create an order and send you to PayPal to approve it as the sandbox buyer
-app.get("/paypal/create", async (req, res) => {
-  try {
-    const amount = Number(req.query.amount || 10).toFixed(2);
-    const { ok, status, data } = await paypalFetch("/v2/checkout/orders", {
-      method: "POST",
-      headers: { "PayPal-Request-Id": `mandate-${Date.now()}` },
-      body: JSON.stringify({
-        intent: "CAPTURE",
-        purchase_units: [
-          {
-            description: "Mandate sandbox test purchase",
-            amount: { currency_code: "USD", value: amount },
-          },
-        ],
-        payment_source: {
-          paypal: {
-            experience_context: {
-              return_url: `${BASE_URL}/paypal/return`,
-              cancel_url: `${BASE_URL}/paypal/cancel`,
-              user_action: "PAY_NOW",
-              shipping_preference: "NO_SHIPPING",
-            },
-          },
-        },
-      }),
-    });
-    if (!ok) return res.status(status).json({ error: "create order failed", details: data });
-
-    const link = (data.links || []).find((l) => l.rel === "payer-action" || l.rel === "approve");
-    if (!link) return res.status(500).json({ error: "no approval link returned", order: data });
-
-    // ?json=1 returns the data instead of redirecting
-    if (req.query.json) return res.json({ orderId: data.id, status: data.status, approveUrl: link.href });
-    res.redirect(link.href);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 4. PayPal sends the buyer back here after approval; we capture the payment
-app.get("/paypal/return", async (req, res) => {
-  try {
-    const orderId = req.query.token;
-    if (!orderId) return res.status(400).json({ error: "missing order token" });
-    const { ok, status, data } = await paypalFetch(`/v2/checkout/orders/${orderId}/capture`, {
-      method: "POST",
-      headers: { "PayPal-Request-Id": `capture-${orderId}` },
-      body: JSON.stringify({}),
-    });
-    if (!ok) return res.status(status).json({ error: "capture failed", details: data });
-    const capture = data.purchase_units?.[0]?.payments?.captures?.[0];
-    res.json({
-      ok: true,
-      orderId: data.id,
-      orderStatus: data.status,
-      captureId: capture?.id,
-      captureStatus: capture?.status,
-      amount: capture?.amount,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-app.get("/paypal/cancel", (req, res) => res.json({ ok: false, message: "Buyer cancelled the order" }));
-
-// 5. Look up any order (useful later for the evidence ledger)
 app.get("/paypal/order/:id", async (req, res) => {
   try {
     const { ok, status, data } = await paypalFetch(`/v2/checkout/orders/${req.params.id}`);
