@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandate</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #14171f; --muted: #667085; --line: #e4e7ec;
+    --brand: #0b5fff; --ok: #12805c; --okbg: #e3f6ee; --warn: #9a5b00; --warnbg: #fff1d6;
+    --bad: #b42318; --badbg: #fde8e6; --info: #344054; --infobg: #eceff4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --card: #171b22; --text: #eef1f6; --muted: #98a2b3; --line: #2a303b;
+      --brand: #6aa0ff; --ok: #5ed3a4; --okbg: #11302a; --warn: #f5b84d; --warnbg: #38290d;
+      --bad: #ff8f86; --badbg: #3a1714; --info: #c7cedb; --infobg: #232935;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 14px 14px 60px; }
+  h1 { font-size: 22px; margin: 6px 0 2px; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 14px; font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  input[type=text], input[type=number], textarea { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+  textarea { min-height: 64px; resize: vertical; }
+  .row { display: flex; gap: 8px; }
+  .row > div { flex: 1; }
+  .cats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .cats label { display: flex; align-items: center; gap: 5px; margin: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); font-size: 13px; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 10px 14px; background: var(--brand); color: #fff; cursor: pointer; }
+  button.ghost { background: var(--infobg); color: var(--info); }
+  button.good { background: var(--ok); color: #fff; }
+  button.bad { background: var(--bad); color: #fff; }
+  button:disabled { opacity: .55; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { background: var(--infobg); color: var(--info); padding: 6px 10px; border-radius: 999px; font-size: 12.5px; }
+  .bar { height: 10px; border-radius: 999px; background: var(--infobg); overflow: hidden; margin: 6px 0 4px; }
+  .bar > span { display: block; height: 100%; background: var(--brand); }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .b-paid, .b-approved { background: var(--okbg); color: var(--ok); }
+  .b-awaiting_approval, .b-payment_failed { background: var(--warnbg); color: var(--warn); }
+  .b-blocked, .b-rejected { background: var(--badbg); color: var(--bad); }
+  .b-no_match, .b-pending { background: var(--infobg); color: var(--info); }
+  .req-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .task { font-weight: 600; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .checks { margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  .checks li { margin: 2px 0; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--brand); font-size: 13px; }
+  .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; word-break: break-all; }
+  .toast { position: fixed; left: 12px; right: 12px; bottom: 14px; max-width: 616px; margin: 0 auto; padding: 12px 14px; border-radius: 12px; background: var(--text); color: var(--bg); font-size: 14px; display: none; z-index: 5; }
+  .led { border-top: 1px solid var(--line); padding: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mandate</h1>
+  <p class="sub">Set the rules once. Your AI agent shops inside them, and every step is on the record.</p>
+
+  <div class="card">
+    <div class="req-top"><h2 style="margin:0">Monthly budget</h2><span id="aiChip" class="badge b-no_match">AI: ...</span></div>
+    <div class="bar"><span id="barFill" style="width:0%"></span></div>
+    <div class="muted" id="budgetText">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h2>Your mandate</h2>
+    <div class="row">
+      <div><label for="budget">Monthly budget ($)</label><input id="budget" type="number" min="0" step="1" inputmode="decimal"></div>
+      <div><label for="cap">Per-purchase cap ($)</label><input id="cap" type="number" min="0" step="1" inputmode="decimal"></div>
+      <div><label for="ask">Ask me above ($)</label><input id="ask" type="number" min="0" step="1" inputmode="decimal"></div>
+    </div>
+    <label>Allowed categories</label>
+    <div class="cats" id="cats"></div>
+    <label for="intent">What I want (the AI reviewer reads this)</label>
+    <textarea id="intent" maxlength="300"></textarea>
+    <div class="actions"><button id="saveMandate">Save mandate</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Ask your shopping agent</h2>
+    <div class="row">
+      <input id="task" type="text" maxlength="200" placeholder="e.g. Top up my phone data for the month">
+      <button id="run" style="flex:0 0 auto">Run</button>
+    </div>
+    <div class="chips" id="samples"></div>
+  </div>
+
+  <h2 style="margin:16px 2px 8px">Activity</h2>
+  <div id="feed"></div>
+
+  <div class="card">
+    <div class="req-top"><h2 style="margin:0">Evidence ledger</h2><span id="chainChip" class="badge b-no_match">...</span></div>
+    <p class="muted">Each entry contains the hash of the one before it. Change anything and the chain breaks.</p>
+    <details><summary>Show entries</summary><div id="ledger"></div></details>
+  </div>
+
+  <div class="actions"><button class="ghost" id="reset">Reset demo</button></div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const money = (n) => "$" + Number(n || 0).toFixed(2).replace(/\.00$/, "");
+const SAMPLES = [
+  "Top up my phone data for the month",
+  "Buy electricity token for my flat",
+  "Stock up on groceries for the week",
+  "I want to learn JavaScript",
+  "Get me noise-cancelling headphones",
+  "Buy a $100 gift card",
+];
+const LABELS = { paid: "Paid", approved: "Approved", awaiting_approval: "Needs your OK", blocked: "Blocked", rejected: "Rejected", no_match: "No match", payment_failed: "Payment failed", pending: "Pending" };
+
+let S = null;
+let catsBuilt = false;
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.style.display = "none"), 4000);
+}
+
+async function api(path, method = "GET", body) {
+  const res = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+
+async function load() {
+  S = await api("/api/state");
+  render();
+}
+
+function render() {
+  const m = S.mandate;
+  const pct = m.monthlyBudget > 0 ? Math.min(100, (S.committed / m.monthlyBudget) * 100) : 0;
+  $("barFill").style.width = pct + "%";
+  $("budgetText").textContent = `${money(S.committed)} of ${money(m.monthlyBudget)} committed (${money(S.paid)} paid). ${money(Math.max(m.monthlyBudget - S.committed, 0))} left.`;
+  $("aiChip").textContent = S.ai ? "AI: Gemini on" : "AI: fallback";
+  $("aiChip").className = "badge " + (S.ai ? "b-paid" : "b-awaiting_approval");
+
+  if (!catsBuilt) {
+    $("cats").innerHTML = S.categories.map((c) => `<label><input type="checkbox" value="${esc(c)}"> ${esc(c)}</label>`).join("");
+    $("samples").innerHTML = SAMPLES.map((s) => `<span class="chip" data-s="${esc(s)}">${esc(s)}</span>`).join("");
+    $("budget").value = m.monthlyBudget; $("cap").value = m.perPurchaseCap; $("ask").value = m.askAbove; $("intent").value = m.intent;
+    document.querySelectorAll("#cats input").forEach((i) => (i.checked = m.allowedCategories.includes(i.value)));
+    catsBuilt = true;
+  }
+
+  $("feed").innerHTML = S.requests.length ? S.requests.map(card).join("") : `<div class="card muted">No activity yet. Try a sample request above.</div>`;
+
+  $("chainChip").textContent = S.chain.valid ? `Chain valid (${S.chain.length})` : `BROKEN at #${S.chain.brokenAt}`;
+  $("chainChip").className = "badge " + (S.chain.valid ? "b-paid" : "b-blocked");
+}
+
+function card(r) {
+  const checks = r.policy ? `<ul class="checks">${r.policy.checks.map((c) => `<li>${c.pass ? "✅" : (c.rule === "approval_threshold" ? "⚠️" : "❌")} ${esc(c.detail)}</li>`).join("")}</ul>` : "";
+  const review = r.review ? `<div class="muted" style="margin-top:6px">AI reviewer (${esc(r.review.source)}): ${r.review.verdict === "concern" ? "⚠️ concern. " : "✅ ok. "}${esc(r.review.note)}</div>` : "";
+  const item = r.item ? `<div class="muted">${esc(r.item.name)} × ${r.quantity} = <b>${money(r.total)}</b></div>` : "";
+  const note = r.note ? `<div class="muted" style="margin-top:6px">${esc(r.note)}</div>` : "";
+  let actions = "";
+  if (r.status === "awaiting_approval") actions = `<div class="actions"><button class="good" data-act="approve" data-id="${r.id}">Approve</button><button class="bad" data-act="reject" data-id="${r.id}">Reject</button></div>`;
+  if (r.status === "approved" || r.status === "payment_failed") actions = `<div class="actions"><button data-act="pay" data-id="${r.id}">Pay with PayPal</button></div>`;
+  const paid = r.status === "paid" ? `<div class="muted" style="margin-top:6px">PayPal order <span class="mono">${esc(r.orderId)}</span><br>Capture <span class="mono">${esc(r.captureId)}</span></div>` : "";
+  return `<div class="card">
+    <div class="req-top"><span class="task">${esc(r.task)}</span><span class="badge b-${r.status}">${LABELS[r.status] || r.status}</span></div>
+    ${item}
+    <div class="muted" style="margin-top:6px">Agent (${esc(r.agent?.source)}): ${esc(r.agent?.reasoning)}</div>
+    <details><summary>Why this decision</summary>${checks}${review}</details>
+    ${note}${paid}${actions}
+  </div>`;
+}
+
+async function guard(fn) {
+  try { await fn(); await load(); } catch (e) { toast(e.message); }
+}
+
+document.addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (chip) { $("task").value = chip.dataset.s; return; }
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const id = btn.dataset.id, act = btn.dataset.act;
+  btn.disabled = true;
+  if (act === "pay") {
+    api(`/api/requests/${id}/pay`, "POST").then((d) => { location.href = d.approveUrl; }).catch((err) => { toast(err.message); btn.disabled = false; });
+  } else {
+    guard(() => api(`/api/requests/${id}/decision`, "POST", { action: act }));
+  }
+});
+
+$("saveMandate").onclick = () => guard(async () => {
+  await api("/api/mandate", "PUT", {
+    monthlyBudget: $("budget").value, perPurchaseCap: $("cap").value, askAbove: $("ask").value, intent: $("intent").value,
+    allowedCategories: [...document.querySelectorAll("#cats input:checked")].map((i) => i.value),
+  });
+  toast("Mandate saved");
+});
+
+$("run").onclick = () => {
+  const task = $("task").value.trim();
+  if (!task) return toast("Type a request first");
+  $("run").disabled = true; $("run").textContent = "...";
+  guard(async () => { await api("/api/agent/run", "POST", { task }); $("task").value = ""; })
+    .finally(() => { $("run").disabled = false; $("run").textContent = "Run"; });
+};
+
+$("reset").onclick = () => { if (confirm("Reset the demo (clears activity and ledger)?")) guard(async () => { await api("/api/reset", "POST"); catsBuilt = false; }); };
+
+$("ledger").parentElement.addEventListener("toggle", async (e) => {
+  if (!e.target.open) return;
+  const d = await api("/api/ledger");
+  $("ledger").innerHTML = d.entries.map((x) => `<div class="led"><b>#${x.seq} ${esc(x.type)}</b> <span class="muted">${esc(x.requestId || "")}</span><div class="mono">${esc(x.hash)}</div></div>`).join("") || `<div class="muted">Empty</div>`;
+});
+
+const q = new URLSearchParams(location.search);
+if (q.get("paid")) toast("Payment captured on PayPal sandbox ✅");
+if (q.get("failed")) toast("Payment could not be completed");
+if (q.get("cancelled")) toast("You cancelled the PayPal payment");
+if (q.toString()) history.replaceState({}, "", "/");
+
+load().catch((e) => toast(e.message));
+</script>
+</body>
+  </html>
