@@ -110,8 +110,8 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = (n) => "$" + Number(n || 0).toFixed(2).replace(/\.00$/, "");
 const SAMPLES = [
-  "Top up my phone data for the month",
-  "Buy electricity token for my flat",
+  "Renew my phone plan for the month",
+  "Pay this month's electric bill",
   "Stock up on groceries for the week",
   "I want to learn JavaScript",
   "Get me noise-cancelling headphones",
@@ -233,4 +233,4 @@ if (q.toString()) history.replaceState({}, "", "/");
 load().catch((e) => toast(e.message));
 </script>
 </body>
-  </html>
+</html>
