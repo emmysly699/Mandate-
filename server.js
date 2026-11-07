@@ -10,6 +10,7 @@ import { CATALOG, CATEGORIES } from "./lib/catalog.js";
 import { evaluate } from "./lib/policy.js";
 import { chooseItem, reviewIntent } from "./lib/agent.js";
 import { aiEnabled } from "./lib/ai.js";
+import { DISPUTE_REASONS, buildEvidence, draftLetter, packetHash } from "./lib/dispute.js";
 import * as ledger from "./lib/ledger.js";
 import { state, resetState, committedSpend, paidSpend, newId } from "./lib/store.js";
 import { missingEnv, getAccessToken, createOrder, captureOrder, paypalFetch } from "./lib/paypal.js";
@@ -46,6 +47,7 @@ app.get("/api/state", (req, res) => {
 });
 
 app.get("/api/ledger", (req, res) => res.json({ chain: ledger.verify(), entries: ledger.all() }));
+
 // ---------- mandate ----------
 app.put("/api/mandate", (req, res) => {
   const b = req.body || {};
@@ -117,6 +119,7 @@ app.post("/api/requests/:id/decision", (req, res) => {
   if (!r) return res.status(404).json({ error: "Request not found" });
   if (r.status !== "awaiting_approval") return res.status(409).json({ error: "This request is not waiting for approval" });
   const action = req.body?.action;
+
   if (action === "reject") {
     r.status = "rejected";
     ledger.append("human_decision", r.id, { action: "reject" });
@@ -149,12 +152,45 @@ app.post("/api/requests/:id/pay", async (req, res) => {
   }
 });
 
+// ---------- dispute copilot ----------
+app.post("/api/requests/:id/dispute", async (req, res) => {
+  const r = findRequest(req.params.id);
+  if (!r) return res.status(404).json({ error: "Request not found" });
+  if (r.status !== "paid") return res.status(409).json({ error: "Only paid purchases can be disputed" });
+  if (r.dispute) return res.status(409).json({ error: "A dispute is already open for this purchase" });
+  const reason = req.body?.reason;
+  if (!DISPUTE_REASONS[reason]) return res.status(400).json({ error: "Choose a dispute reason" });
+
+  // Live lookup of the order from PayPal (skipped quietly if unavailable)
+  let live = null;
+  if (r.orderId && !missingEnv().length) {
+    try {
+      const o = await paypalFetch(`/v2/checkout/orders/${r.orderId}`);
+      if (o.ok) live = o.data;
+    } catch {}
+  }
+
+  const packet = buildEvidence({ request: r, reason, entries: ledger.forRequest(r.id), chain: ledger.verify(), live });
+  const { letter, source } = await draftLetter(packet);
+  const hash = packetHash(packet);
+  ledger.append("dispute_opened", r.id, { reason, strength: packet.strength.level, packetHash: hash });
+  r.dispute = { reason, reasonText: DISPUTE_REASONS[reason], openedAt: new Date().toISOString(), strength: packet.strength, letter, letterSource: source, packetHash: hash, simulated: true, packet };
+  res.json({ ok: true, dispute: r.dispute });
+});
+
+app.get("/api/requests/:id/evidence", (req, res) => {
+  const r = findRequest(req.params.id);
+  if (!r || !r.dispute) return res.status(404).json({ error: "No dispute for this request" });
+  res.type("json").send(JSON.stringify({ packetHash: r.dispute.packetHash, letter: r.dispute.letter, packet: r.dispute.packet }, null, 2));
+});
+
 // ---------- reset the demo ----------
 app.post("/api/reset", (req, res) => {
   resetState();
   ledger.reset();
   res.json({ ok: true });
 });
+
 // ---------- PayPal return / cancel ----------
 app.get("/paypal/return", async (req, res) => {
   const orderId = req.query.token;
@@ -178,11 +214,13 @@ app.get("/paypal/return", async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
 app.get("/paypal/cancel", (req, res) => {
   const r = state.requests.find((x) => x.orderId === req.query.token);
   if (r) ledger.append("buyer_cancelled", r.id, { orderId: r.orderId });
   res.redirect("/?cancelled=1");
 });
+
 // ---------- sandbox test helpers (from day 1) ----------
 app.get("/paypal/token-check", async (req, res) => {
   try {
