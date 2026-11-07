@@ -13,6 +13,7 @@ Built for the PayPal AI Hackathon.
 4. **Decision:** approved, needs your OK, or blocked.
 5. **PayPal sandbox:** approved purchases create a PayPal order; you confirm it with PayPal and the payment is captured.
 6. **Evidence ledger:** each step is stored in a hash-chained log. Changing any entry breaks the chain.
+7. **Dispute copilot:** on a paid purchase, "Dispute this charge" builds an evidence packet from the ledger plus a live PayPal order lookup, rates the case (strong, moderate or weak) with plain rules, and drafts the response letter (AI, or a template if the AI is unavailable). Disputes are simulated in the sandbox.
 
 If the AI is unavailable or rate-limited, the agent and reviewer fall back to simple logic so the rules still run.
 
