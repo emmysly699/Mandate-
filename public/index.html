@@ -254,6 +254,8 @@
       <div class="card-h"><h2><svg class="i"><use href="#i-link"/></svg>Evidence ledger</h2><span id="chainChip" class="badge tone-none">…</span></div>
       <p class="muted small" style="margin:0">Each entry contains the hash of the one before it. Change anything and the chain breaks.</p>
       <details><summary>Show entries</summary><div id="ledger"></div></details>
+      <div class="btn-row"><button id="tamper" class="secondary sm" type="button">Simulate tampering</button></div>
+      <p class="muted small" id="tamperHint" style="margin:8px 0 0">Demo tool: edits one record behind the scenes so you can watch the chain catch it.</p>
     </section>
   </div>
 
@@ -361,6 +363,10 @@ function render() {
 
   $("chainChip").textContent = S.chain.valid ? `Valid · ${S.chain.length} entries` : `Broken at #${S.chain.brokenAt}`;
   $("chainChip").className = "badge " + (S.chain.valid ? "tone-ok" : "tone-bad");
+  $("tamper").textContent = S.tampered ? "Restore ledger" : "Simulate tampering";
+  $("tamperHint").textContent = S.tampered
+    ? "A record was edited. Disputes opened now will be rated weak because the evidence can't be trusted."
+    : "Demo tool: edits one record behind the scenes so you can watch the chain catch it.";
 }
 
 function pipeline(r) {
@@ -467,6 +473,11 @@ function runAgent() {
 }
 $("run").onclick = runAgent;
 $("task").addEventListener("keydown", (e) => { if (e.key === "Enter") runAgent(); });
+
+$("tamper").onclick = () => guard(async () => {
+  if (S.tampered) { await api("/api/demo/restore", "POST"); toast("Ledger restored"); }
+  else { const d = await api("/api/demo/tamper", "POST"); toast(`Entry #${d.editedEntry} was edited. The chain is now broken.`); }
+});
 
 $("reset").onclick = () => {
   if (confirm("Reset the demo (clears activity and ledger)?")) guard(async () => { await api("/api/reset", "POST"); formBuilt = false; });
