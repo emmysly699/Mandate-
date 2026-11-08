@@ -42,6 +42,7 @@ app.get("/api/state", (req, res) => {
     paid: paidSpend(),
     requests: [...state.requests].reverse(),
     chain: ledger.verify(),
+    tampered: ledger.isTampered(),
     ai: aiEnabled(),
   });
 });
@@ -182,6 +183,18 @@ app.get("/api/requests/:id/evidence", (req, res) => {
   const r = findRequest(req.params.id);
   if (!r || !r.dispute) return res.status(404).json({ error: "No dispute for this request" });
   res.type("json").send(JSON.stringify({ packetHash: r.dispute.packetHash, letter: r.dispute.letter, packet: r.dispute.packet }, null, 2));
+});
+
+// ---------- demo tools: show that the ledger detects edits ----------
+app.post("/api/demo/tamper", (req, res) => {
+  const seq = ledger.tamper();
+  if (!seq) return res.status(409).json({ error: ledger.isTampered() ? "Ledger is already tampered with" : "Nothing in the ledger yet. Run a request first." });
+  res.json({ ok: true, editedEntry: seq, chain: ledger.verify() });
+});
+
+app.post("/api/demo/restore", (req, res) => {
+  if (!ledger.restore()) return res.status(409).json({ error: "Nothing to restore" });
+  res.json({ ok: true, chain: ledger.verify() });
 });
 
 // ---------- reset the demo ----------
